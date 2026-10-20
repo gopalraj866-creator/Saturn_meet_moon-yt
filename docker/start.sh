@@ -14,29 +14,18 @@ if [ -z "${YOUTUBE_STREAM_KEY:-}" ]; then
 fi
 
 # Subscriber count + live viewer count are optional — if the API creds
-# aren't provided, those elements just stay blank instead of failing
-# the whole stream.
+# aren't provided, those panel elements just stay blank instead of
+# failing the whole stream.
 SHOW_STATS=true
 if [ -z "${YOUTUBE_API_KEY:-}" ] || [ -z "${YOUTUBE_CHANNEL_ID:-}" ]; then
     echo "NOTICE: YOUTUBE_API_KEY / YOUTUBE_CHANNEL_ID not set — subscriber/viewer stats will be hidden."
     SHOW_STATS=false
 fi
 
-#############################################
-# Output settings: 1080p @ 30 fps
-#############################################
-OUT_W=1920
-OUT_H=1080
-OUT_FPS=30
-VIDEO_BITRATE="6000k"      # YouTube-recommended range for 1080p30 is ~4500-9000k
-VIDEO_BUFSIZE="12000k"     # 2x bitrate
-X264_PRESET="ultrafast"    # lightest preset — 1080p is heavy for a 2-core runner
-
 echo "========================================"
-echo "Starting 24/7 YouTube Stream — Saturn and its Rings"
-echo "Output Resolution : ${OUT_W}x${OUT_H} (1080p)"
-echo "FPS               : ${OUT_FPS}"
-echo "Video bitrate     : ${VIDEO_BITRATE}"
+echo "Starting 24/7 YouTube Stream (Documentary Overlay)"
+echo "Output Resolution : 1280x720 (720p — sized for a 2-core CI runner)"
+echo "FPS               : 30"
 echo "========================================"
 
 FONT="font.ttf"
@@ -46,23 +35,26 @@ ASSET_DIR="panel_assets"
 INFO_FILE="galaxy_info.txt"
 SLOT=6            # seconds each headline is shown
 FACT_SLOT=8       # seconds each fun fact is shown
+TICKER_SPEED=110  # pixels/second for the bottom ticker scroll
 CHANNEL_NAME="Technical Talk India"
-# No background panels, so text gets a soft outline + shadow to stay
-# readable on top of the video (sized for 1080p).
-SHADOW="shadowcolor=black@0.8:shadowx=3:shadowy=3:borderw=3:bordercolor=black@0.55"
-HEADLINE_FONTSIZE=32
-HEADLINE_LINE_SPACING=14
+SHADOW="shadowcolor=black@0.6:shadowx=1:shadowy=1"
+HEADLINE_FONTSIZE=21
+HEADLINE_LINE_SPACING=9
 HEADLINE_LINE_H=$((HEADLINE_FONTSIZE + HEADLINE_LINE_SPACING))
 
-# Don't show "N watching now" until the live viewer count reaches this many.
+# Don't show "N watching now" until the live viewer count reaches this
+# many — a very low number (e.g. "5 watching") reads worse to a new
+# visitor than showing nothing at all. Raise/lower to taste.
 VIEWER_MIN_TO_SHOW=10
 
-# Approximate center + radius (in 1920x1080 output coordinates) of the
-# subscribe icon baked into overlay.png; a pulsing gold ring is drawn
-# around it. (overlay.png is scaled to the output size.)
-SUB_ICON_X=1873
-SUB_ICON_Y=1015
-SUB_ICON_R=30
+# Approximate center + radius (in 1280x720 output coordinates) of the
+# subscribe icon baked into overlay.png, used to draw a pulsing gold
+# ring around it every few seconds so it catches the eye. Adjust these
+# three numbers to match the icon's actual position in your overlay.png
+# — the defaults below are an estimate for the bottom-right corner.
+SUB_ICON_X=1249
+SUB_ICON_Y=677
+SUB_ICON_R=20
 
 #############################################
 # Up-next bumper (shown between videos)
@@ -70,41 +62,54 @@ SUB_ICON_R=30
 ENABLE_BUMPER=true
 BUMPER_DURATION=5   # seconds
 BUMPER_MESSAGES=(
-    "Stay tuned as we keep tracking Saturn, its rings and its moons."
-    "Saturn's orbit takes about 29.5 years. Stay with us for the next view."
-    "Follow the ringed planet as it travels along its orbital path."
-    "From Titan to Enceladus, Saturn's moons are coming up next."
-    "The rings of Saturn are still telling their story. Stay with us."
-    "See Saturn and its rings in extraordinary detail."
-    "Every observation reveals another secret of Saturn's rings."
-    "Look closer at the ringed planet and its many moons."
-    "Over 270 moons, countless icy ring particles, and one giant planet."
-    "The next chapter of our journey around Saturn begins shortly."
+    "Stay tuned as the James Webb Space Telescope reveals more of the Universe."
+    "A new window into the cosmos is coming up next."
+    "Journey deeper into space as Webb explores distant cosmic worlds."
+    "From ancient galaxies to stellar nurseries, more discoveries await."
+    "The Universe is still unfolding. Stay with us for the next view."
+    "See the cosmos in extraordinary detail through the eyes of Webb."
+    "Every new observation brings another piece of our cosmic story."
+    "Look deeper into space and further back in cosmic time."
+    "More distant galaxies, brilliant stars, and hidden cosmic structures are ahead."
+    "The next chapter of our journey through the Universe begins shortly."
 )
 
 #############################################
 # Auto-restart on failure
 #############################################
 MAX_RETRIES=5       # per-video retry attempts before moving on
-RETRY_DELAY=5       # seconds between retries
+RETRY_DELAY=5        # seconds between retries
 
 mkdir -p "$ASSET_DIR"
 
 #############################################
-# Coordinate-label marker dot (ffmpeg input #2)
-# 30x30: gold center, white ring.
+# Generate the coordinate-label marker dot once
+# at startup: a small transparent PNG with a
+# gold-filled center and white ring, matching
+# the panel's gold accent color. Used by
+# build_labels_chain() as ffmpeg input index 2.
+# Always generated (cheap, one frame, 20x20) —
+# harmless/unused by ffmpeg on videos that don't
+# have a matching .labels.txt file.
 #############################################
 DOT_MARKER="dot_marker.png"
 GOLD_R=232; GOLD_G=163; GOLD_B=61
-DOT_VF="format=rgba,geq=r=(if(lte(hypot(X-15\,Y-15)\,8)\,${GOLD_R}\,if(lte(hypot(X-15\,Y-15)\,12)\,255\,0))):g=(if(lte(hypot(X-15\,Y-15)\,8)\,${GOLD_G}\,if(lte(hypot(X-15\,Y-15)\,12)\,255\,0))):b=(if(lte(hypot(X-15\,Y-15)\,8)\,${GOLD_B}\,if(lte(hypot(X-15\,Y-15)\,12)\,255\,0))):a=(if(lte(hypot(X-15\,Y-15)\,12)\,255\,0))"
-ffmpeg -y -f lavfi -i "color=c=black@0.0:s=30x30" -vf "$DOT_VF" -frames:v 1 "$DOT_MARKER" -loglevel error || true
+DOT_VF="format=rgba,geq=r=(if(lte(hypot(X-10\,Y-10)\,5)\,${GOLD_R}\,if(lte(hypot(X-10\,Y-10)\,8)\,255\,0))):g=(if(lte(hypot(X-10\,Y-10)\,5)\,${GOLD_G}\,if(lte(hypot(X-10\,Y-10)\,8)\,255\,0))):b=(if(lte(hypot(X-10\,Y-10)\,5)\,${GOLD_B}\,if(lte(hypot(X-10\,Y-10)\,8)\,255\,0))):a=(if(lte(hypot(X-10\,Y-10)\,8)\,255\,0))"
+ffmpeg -y -f lavfi -i "color=c=black@0.0:s=20x20" -vf "$DOT_VF" -frames:v 1 "$DOT_MARKER" -loglevel error
 if [ ! -s "$DOT_MARKER" ]; then
+    # Guarantee the file always exists and is a valid PNG, even in the
+    # unlikely case the geq-based generation above fails — this is what
+    # gets passed to ffmpeg as a real input on every stream start, so it
+    # must never be missing. Falls back to an invisible 1x1 transparent
+    # pixel (labels would render without a visible dot, but the stream
+    # itself keeps running instead of crashing on a missing input file).
     echo "WARNING: geq-based marker generation failed — using a blank 1x1 fallback."
     echo "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=" | base64 -d > "$DOT_MARKER"
 fi
 
 #############################################
-# Background clock writer
+# Background clock writer (avoids fragile
+# drawtext %{gmtime} expansion syntax)
 #############################################
 date -u +'%d %b %Y  •  %H:%M:%S UTC' > "$ASSET_DIR/clock.txt"
 (
@@ -118,6 +123,9 @@ CLOCK_PID=$!
 
 #############################################
 # Background subscriber-count writer
+# (polls YouTube Data API every 60s — subs
+# don't change second to second, and this
+# respects API quota)
 #############################################
 printf ' ' > "$ASSET_DIR/subs.txt"
 SUBS_PID=""
@@ -126,13 +134,20 @@ if [ "$SHOW_STATS" = true ]; then
         WARNED_ONCE=false
         while true; do
             RESP=$(curl -s "https://www.googleapis.com/youtube/v3/channels?part=statistics&id=${YOUTUBE_CHANNEL_ID}&key=${YOUTUBE_API_KEY}" || true)
-            COUNT=$(echo "$RESP" | grep -o '"subscriberCount"[^"]*"[0-9]*"' | grep -oE '[0-9]+' || true)
+            COUNT=$(echo "$RESP" | grep -o '"subscriberCount"[^"]*"[0-9]*"' | grep -oE '[0-9]+')
             if [ -n "$COUNT" ]; then
+                # Manual comma insertion — locale-independent, so it works
+                # the same regardless of the container's default locale
+                # (printf "%'d" silently fails to group digits under the
+                # bare "C" locale that Ubuntu containers ship with).
                 FORMATTED=$(echo "$COUNT" | rev | sed 's/\(...\)/\1,/g' | rev | sed 's/^,//')
                 printf '%s subscribers' "$FORMATTED" > "$ASSET_DIR/subs.txt.tmp"
                 mv -f "$ASSET_DIR/subs.txt.tmp" "$ASSET_DIR/subs.txt"
                 WARNED_ONCE=false
             elif [ "$WARNED_ONCE" = false ]; then
+                # Log the raw response once so it shows up in the Actions
+                # log — this tells us exactly why the count isn't parsing
+                # (bad channel ID, disabled API, quota, key restrictions, etc.)
                 echo "WARNING: could not parse subscriberCount from API response. Raw response:"
                 echo "$RESP"
                 WARNED_ONCE=true
@@ -145,6 +160,12 @@ fi
 
 #############################################
 # Background live-viewer-count writer
+# Strategy: find the channel's currently-live
+# video once (search.list — costs more quota,
+# so only called when we don't already have an
+# id), then poll videos.list (cheap, 1 unit)
+# every 30s for concurrentViewers. If the
+# broadcast ends/restarts, re-search.
 #############################################
 printf ' ' > "$ASSET_DIR/viewers.txt"
 VIEWERS_PID=""
@@ -154,18 +175,21 @@ if [ "$SHOW_STATS" = true ]; then
         while true; do
             if [ -z "$LIVE_VIDEO_ID" ]; then
                 SEARCH_RESP=$(curl -s "https://www.googleapis.com/youtube/v3/search?part=id&channelId=${YOUTUBE_CHANNEL_ID}&eventType=live&type=video&key=${YOUTUBE_API_KEY}" || true)
-                LIVE_VIDEO_ID=$(echo "$SEARCH_RESP" | grep -o '"videoId": *"[^"]*"' | head -1 | sed -E 's/.*"videoId": *"([^"]*)".*/\1/' || true)
+                LIVE_VIDEO_ID=$(echo "$SEARCH_RESP" | grep -o '"videoId": *"[^"]*"' | head -1 | sed -E 's/.*"videoId": *"([^"]*)".*/\1/')
             fi
             if [ -n "$LIVE_VIDEO_ID" ]; then
                 VRESP=$(curl -s "https://www.googleapis.com/youtube/v3/videos?part=liveStreamingDetails&id=${LIVE_VIDEO_ID}&key=${YOUTUBE_API_KEY}" || true)
-                VIEWERS=$(echo "$VRESP" | grep -o '"concurrentViewers": *"[0-9]*"' | grep -o '[0-9]*' || true)
+                VIEWERS=$(echo "$VRESP" | grep -o '"concurrentViewers": *"[0-9]*"' | grep -o '[0-9]*')
                 if [ -n "$VIEWERS" ] && [ "$VIEWERS" -ge "$VIEWER_MIN_TO_SHOW" ]; then
                     printf '%s watching now' "$VIEWERS" > "$ASSET_DIR/viewers.txt.tmp"
                     mv -f "$ASSET_DIR/viewers.txt.tmp" "$ASSET_DIR/viewers.txt"
                 elif [ -n "$VIEWERS" ]; then
+                    # Below the display threshold — keep the panel blank
+                    # rather than showing a small/discouraging number.
                     printf ' ' > "$ASSET_DIR/viewers.txt.tmp"
                     mv -f "$ASSET_DIR/viewers.txt.tmp" "$ASSET_DIR/viewers.txt"
                 else
+                    # Broadcast ended or hasn't registered yet — clear and re-search.
                     LIVE_VIDEO_ID=""
                     printf ' ' > "$ASSET_DIR/viewers.txt"
                 fi
@@ -179,80 +203,136 @@ fi
 trap 'kill "$CLOCK_PID" 2>/dev/null || true; [ -n "$SUBS_PID" ] && kill "$SUBS_PID" 2>/dev/null || true; [ -n "$VIEWERS_PID" ] && kill "$VIEWERS_PID" 2>/dev/null || true' EXIT
 
 #############################################
-# Static text
+# Static panel text (unchanged across videos)
 #############################################
-printf 'SATURN AND ITS RINGS — LIVE'     > "$ASSET_DIR/title1.txt"
-printf 'P L A N E T   T R A C K E R'        > "$ASSET_DIR/header.txt"
-printf 'PLANET · RINGS · ORBIT · MOONS'    > "$ASSET_DIR/eyebrow.txt"
-printf 'DID YOU KNOW'                     > "$ASSET_DIR/fact_label.txt"
+printf 'J A M E S   W E B B'              > "$ASSET_DIR/title1.txt"
+printf 'S P A C E   T E L E S C O P E'    > "$ASSET_DIR/title2.txt"
+printf "T O D A Y ' S   D I S C O V E R Y" > "$ASSET_DIR/header.txt"
+printf 'DEEP SPACE REPORT'                > "$ASSET_DIR/eyebrow.txt"
+printf 'SUBSCRIBE for daily space discoveries' > "$ASSET_DIR/cta.txt"
+printf 'DID YOU KNOW' > "$ASSET_DIR/fact_label.txt"
 
 #############################################
-# Default headline / fact pools (used if
-# galaxy_info.txt / facts.txt are missing)
+# Default headline / fact pools (used as a
+# last resort if galaxy_info.txt / facts.txt
+# are missing or empty)
 #############################################
 DEFAULT_HEADLINES=(
-    "Tracking Saturn live: the planet, its rings, its orbital path and its moons."
-    "Saturn takes about 29.5 Earth years to complete one orbit around the Sun."
-    "Saturn orbits the Sun at an average distance of about 1.4 billion kilometers."
-    "The ring system reaches up to 282,000 kilometers from Saturn, yet the main rings are often only about 10 meters thick."
-    "The rings are labeled with letters, from innermost to outermost: D, C, B, A, F, G and E."
-    "The Cassini Division, a gap about 4,800 kilometers wide, separates Saturn's A and B rings."
-    "Saturn has more than 270 confirmed moons, the most of any planet in the Solar System."
-    "Titan, Saturn's largest moon, is bigger than Mercury and has a thick nitrogen atmosphere."
-    "Enceladus sprays water-ice plumes from its south pole, feeding Saturn's faint E ring."
-    "Saturn's axis is tilted about 27 degrees, which is why its rings seem to open and close over the years."
-    "Saturn rotates once in about 10.5 hours, flattening the planet at its poles."
-    "Saturn is a gas giant made mostly of hydrogen and helium, with no solid surface."
-    "Rhea is Saturn's second-largest moon, followed by Iapetus, Dione and Tethys."
-    "The Cassini spacecraft explored Saturn from 2004 to 2017, ending with a final plunge into the planet."
-    "Saturn reached opposition in early October 2026, when it is closest to Earth and brightest for the year."
+    "The James Webb Space Telescope continues revealing the Universe in extraordinary infrared detail."
+    "Webb is looking deeper into cosmic history, studying some of the earliest galaxies ever observed."
+    "Astronomers are using Webb to investigate the atmospheres and chemistry of distant exoplanets."
+    "Infrared observations are revealing stellar nurseries hidden behind dense clouds of cosmic dust."
+    "Webb is helping scientists investigate how the first galaxies formed and evolved after the Big Bang."
+    "Distant galaxies observed by Webb are giving astronomers new clues about the evolution of the cosmos."
+    "Webb observations are revealing complex chemistry in the regions where stars and planets are born."
+    "Young planetary systems are helping scientists understand how worlds form around distant stars."
+    "Webb continues studying protoplanetary disks where the building blocks of new planets are taking shape."
+    "Astronomers are using Webb to explore the environments surrounding supermassive black holes."
+    "The Euclid mission is mapping billions of galaxies to investigate the nature of dark matter and dark energy."
+    "The Vera C. Rubin Observatory is beginning a new era of wide-field astronomical observations of the Southern Sky."
+    "Gravitational-wave observatories are opening another window onto violent events across the Universe."
+    "Scientists are combining observations from Webb and other observatories to build a more complete picture of cosmic evolution."
+    "Every deep-space observation adds another piece to the story of how galaxies, stars, and planets came to exist."
 )
 
 DEFAULT_FACTS=(
-    "Saturn is the second-largest planet in the Solar System, after Jupiter."
-    "Saturn's equatorial diameter is about 120,500 kilometers, roughly 9.4 times Earth's."
-    "Saturn is the least dense planet in the Solar System — less dense than water."
-    "One year on Saturn lasts about 29.5 Earth years."
-    "A day on Saturn lasts only about 10.5 hours."
-    "Saturn's average distance from the Sun is about 9.5 AU, or roughly 1.4 billion kilometers."
-    "Saturn travels around the Sun at an average speed of about 9.7 kilometers per second."
-    "Saturn's axis is tilted about 26.7 degrees, close to Earth's 23.4 degrees."
-    "Saturn's rings are mostly water ice, from tiny grains to chunks as big as houses."
-    "The Cassini Division is a gap about 4,800 kilometers wide between the A and B rings."
-    "The B ring is the brightest and most massive of Saturn's main rings."
-    "The tiny moon Pan keeps the Encke Gap in Saturn's A ring clear."
-    "The shepherd moons Prometheus and Pandora help shape Saturn's narrow F ring."
-    "Saturn has more than 270 confirmed moons, more than any other planet."
-    "Titan is Saturn's largest moon and the second-largest moon in the Solar System."
-    "Titan is the only moon with a thick atmosphere, and it has lakes of liquid methane and ethane."
-    "Enceladus has a global ocean of liquid water beneath its icy crust."
-    "Mimas is marked by the giant Herschel crater, about one third of the moon's width."
-    "Iapetus has one bright hemisphere and one dark hemisphere."
-    "Rhea is Saturn's second-largest moon, about 1,527 kilometers across."
-    "Mimas orbits Saturn in about 22.6 hours, the fastest of the major moons."
-    "Enceladus orbits Saturn in about 1.4 days."
-    "Titan orbits Saturn in about 16 days."
-    "Iapetus takes about 79 days to orbit Saturn."
-    "Saturn's major moons orbit close to the plane of its rings."
-    "A six-sided jet stream circles Saturn's north pole and is about 30,000 kilometers wide."
-    "Winds near Saturn's equator reach about 1,800 kilometers per hour."
-    "Saturn radiates more energy than it receives from the Sun."
-    "The Cassini spacecraft orbited Saturn from 2004 to 2017."
-    "The Huygens probe landed on Titan in January 2005."
-    "Galileo first saw Saturn's rings in 1610, and Christiaan Huygens explained them in 1655."
-    "Seen edge-on from Earth, Saturn's rings nearly vanish about every 13 to 15 years."
-    "Saturn is visible to the naked eye, and even a small telescope shows its rings."
+    "The Universe is approximately 13.8 billion years old."
+    "A light-year is the distance light travels in one year, about 9.46 trillion kilometers."
+    "The James Webb Space Telescope observes the Universe primarily in infrared wavelengths."
+    "Webb can observe extremely distant galaxies whose light has traveled for more than 13 billion years."
+    "Webb studies the atmospheres of exoplanets by analyzing how their atmospheres interact with starlight."
+    "Infrared astronomy allows Webb to see through some clouds of cosmic dust that block visible light."
+    "Webb is studying how stars and planetary systems form inside clouds of gas and dust."
+    "Some early galaxies observed by Webb existed within the first few hundred million years of cosmic history."
+    "Astronomers use Webb to investigate how galaxies assembled and evolved over billions of years."
+    "The Milky Way contains hundreds of billions of stars."
+    "The observable Universe contains an enormous number of galaxies, each containing millions to trillions of stars."
+    "The Sun contains about 99.8 percent of the mass of the Solar System."
+    "Jupiter is the largest planet in our Solar System."
+    "Mars is home to Olympus Mons, the largest known volcano in the Solar System."
+    "Saturn's spectacular rings are made primarily of water-ice particles mixed with rock and dust."
+    "Venus is the hottest planet in the Solar System because of its powerful greenhouse effect."
+    "Mercury experiences extreme temperature differences between its day and night sides."
+    "Neptune has the fastest planetary winds measured in the Solar System, exceeding 2,000 kilometers per hour."
+    "Uranus rotates with an extreme axial tilt of about 98 degrees, making it appear to rotate on its side."
+    "Earth is currently the only planet known to naturally support life."
+    "The Moon is slowly moving away from Earth at an average rate of about 3.8 centimeters per year."
+    "The International Space Station orbits Earth at roughly 28,000 kilometers per hour."
+    "Neutron stars pack more mass than the Sun into a sphere only a few tens of kilometers across."
+    "A black hole's event horizon marks the boundary beyond which light cannot escape."
+    "At the center of the Milky Way lies a supermassive black hole called Sagittarius A*."
+    "Gravitational waves are ripples in spacetime produced by accelerating massive objects, including merging black holes."
+    "Dark matter does not emit or reflect light in a way we can directly detect, but its gravitational effects reveal its presence."
+    "Dark energy is the name given to the unknown component associated with the accelerating expansion of the Universe."
+    "The Milky Way and Andromeda galaxies are expected to interact and eventually merge over billions of years."
+    "A supernova is a powerful stellar explosion associated with the death of certain massive stars and other stellar events."
+    "The core of the Sun reaches temperatures of roughly 15 million degrees Celsius."
+    "Proxima Centauri is the closest known star to the Sun, at about 4.24 light-years away."
+    "Thousands of exoplanets have been confirmed beyond our Solar System."
+    "Exoplanets range from enormous gas giants to rocky worlds and planets with unusual atmospheric compositions."
+    "Galaxies are connected across the Universe by a vast cosmic web of filaments, walls, and enormous voids."
+    "Einstein's theory of relativity predicts that clocks run more slowly in stronger gravitational fields."
+    "Voyager 1 is the most distant human-made spacecraft from Earth."
+    "Voyager 1 crossed the heliopause and entered interstellar space in 2012."
+    "Earth's magnetic field helps shield the planet from charged particles carried by the solar wind."
+    "Auroras occur when energetic charged particles interact with gases in Earth's upper atmosphere."
+    "Webb has produced some of the deepest and most detailed infrared observations of the distant Universe."
+    "Webb is helping astronomers investigate how the earliest galaxies formed and evolved."
+    "Some early galaxies observed by Webb appear surprisingly bright and massive, providing important tests for galaxy-formation models."
+    "Star-forming nebulae contain enormous clouds of gas and dust where new stars can form."
+    "The asteroid belt between Mars and Jupiter contains millions of rocky bodies of different sizes."
+    "Comets are icy bodies that can develop bright comas and tails when heated by the Sun."
+    "Pulsars are rapidly rotating neutron stars that produce beams of electromagnetic radiation."
+    "The Event Horizon Telescope produced the first image of a black hole's shadow in 2019."
+    "In 2022, the Event Horizon Telescope revealed the first image of Sagittarius A*, the black hole at the center of our galaxy."
+    "The search for potentially habitable exoplanets is one of the major goals of modern astronomy."
 )
 
 #############################################
-# build_labels_chain: optional per-video
-# callout labels from <basename>.labels.txt
-# (format: x,y,Label text).
+# build_labels_chain: optional feature — draws
+# pointer/callout labels onto specific
+# coordinates in the video, similar to
+# hand-annotated documentary footage. Fully
+# optional per video: only activates if a file
+# named <basename>.labels.txt exists.
 #
-# NOTE: x,y in the .labels.txt files are still
-# given in 1280x720 coordinates (as before) and
-# are scaled x1.5 here to the 1920x1080 frame,
-# so existing label files keep working.
+# File format — one label per line, comma
+# separated:
+#   x,y,Label text here
+# where x,y is the pixel position on the
+# 1280x720 output frame that the label should
+# point at. Box placement, connector line, and
+# edge-avoidance (flips below/left near frame
+# edges) are computed automatically.
+#
+# Visual style matches the rest of the panel:
+# gold-ring/white marker dot (uses the
+# pre-rendered dot_marker.png), gold-tinted
+# connector line, and a label box with a gold
+# accent bar + thin gold outline (same language
+# as the CTA box).
+#
+# Notes/limits:
+#  - Keep label text under ~28 characters — the
+#    box is a fixed width and does not
+#    reflow/resize to fit longer text.
+#  - Best used for points with x > ~370 so
+#    labels don't collide with the left info
+#    panel.
+#  - The connector is a right-angle line
+#    (vertical then horizontal), not a true
+#    diagonal — ffmpeg has no native diagonal
+#    line primitive without much heavier
+#    filters, so this is the practical choice.
+#  - Requires dot_marker.png (generated once at
+#    startup) to be wired in as ffmpeg input
+#    index 2 — see run_video()'s -i list.
+#
+# Sets globals: LABELS_CHAIN (filter string to
+# append), LABELS_OUT (bracketed output label
+# to continue the chain from, e.g. "[base]" if
+# no labels file exists, or the last label's
+# output node otherwise).
 #############################################
 build_labels_chain() {
     local url="$1"
@@ -260,7 +340,15 @@ build_labels_chain() {
     base="${url##*/}"
     base="${base%.*}"
 
-    # `local` matters: the main loop uses a bare `i` too.
+    # FIX: without `local`, every bare loop variable assigned in this
+    # function (i, idx, and the C-style `for ((i=...))` counters below)
+    # is a GLOBAL bash variable. The main stream loop at the bottom of
+    # this file also uses a bare `i` (`for ((i = 0; i < NUM_URLS; i++))`),
+    # and this function runs (via prepare_video_content -> run_video)
+    # once per video inside that loop. Any unscoped `i`/`idx` in here
+    # silently overwrites the outer loop's counter, which is what caused
+    # the stream to get stuck replaying the first video forever instead
+    # of advancing through the whole playlist.
     local i idx
 
     LABELS_CHAIN=""
@@ -271,6 +359,8 @@ build_labels_chain() {
         return 0
     fi
 
+    # First pass: collect valid lines so we know the count up front
+    # (needed to size the marker `split` filter correctly).
     local xs=() ys=() texts=()
     while IFS=',' read -r x y text; do
         x="$(echo "$x" | tr -d '[:space:]')"
@@ -279,8 +369,7 @@ build_labels_chain() {
         [[ "$x" =~ ^[0-9]+$ ]] || continue
         [[ "$y" =~ ^[0-9]+$ ]] || continue
         [ -z "$text" ] && continue
-        # 720p -> 1080p
-        xs+=("$((x * 3 / 2))"); ys+=("$((y * 3 / 2))"); texts+=("$text")
+        xs+=("$x"); ys+=("$y"); texts+=("$text")
     done < "$labels_file"
 
     local n=${#xs[@]}
@@ -290,20 +379,22 @@ build_labels_chain() {
     fi
     echo "Using coordinate labels: $labels_file ($n label(s))"
 
-    local BOX_H=63
-    local V_OFFSET=105
-    local H_OFFSET=60
-    local ACCENT_W=6
-    local BOX_GAP=15
-    local LABEL_FONTSIZE=27
-    local LABEL_PAD_L=21
-    local LABEL_PAD_R=24
-    local AVG_CHAR_W=15
-    local BOX_W_MIN=165
-    local BOX_W_MAX=390
-    local placed_x=() placed_y=() placed_w=()
+    local BOX_H=42
+    local V_OFFSET=70
+    local H_OFFSET=40
+    local ACCENT_W=4
+    local BOX_GAP=10          # minimum clear space required between two label boxes
+    local LABEL_FONTSIZE=18
+    local LABEL_PAD_L=14      # gap between accent bar and text start
+    local LABEL_PAD_R=16      # gap between text end and box's right edge
+    local AVG_CHAR_W=10       # rough proportional-font width estimate at fontsize 18
+    local BOX_W_MIN=110       # never smaller than this, even for a 1-word label
+    local BOX_W_MAX=260       # never bigger than this, even for a long label
+    local placed_x=() placed_y=() placed_w=()  # boxes already placed this video
     local k collision tries
 
+    # Split the pre-rendered marker image (input [2:v]) into one copy per
+    # label so each can be overlaid independently at its own coordinate.
     local split_outs=""
     for ((i = 1; i <= n; i++)); do split_outs+="[dm${i}]"; done
     LABELS_CHAIN+="[2:v]split=${n}${split_outs};"
@@ -314,20 +405,28 @@ build_labels_chain() {
         local x="${xs[$i]}" y="${ys[$i]}" text="${texts[$i]}"
         printf '%s' "$text" > "$ASSET_DIR/label${idx}.txt"
 
+        # Auto-size the box to the label's text instead of using one
+        # fixed width for every label — "Pulsar Wind" no longer gets the
+        # same wide box as a much longer phrase.
         local box_w=$(( ${#text} * AVG_CHAR_W + ACCENT_W + LABEL_PAD_L + LABEL_PAD_R ))
         [ "$box_w" -lt "$BOX_W_MIN" ] && box_w=$BOX_W_MIN
         [ "$box_w" -gt "$BOX_W_MAX" ] && box_w=$BOX_W_MAX
 
         local box_y=$((y - V_OFFSET))
-        if [ "$box_y" -lt 30 ]; then
+        if [ "$box_y" -lt 20 ]; then
             box_y=$((y + V_OFFSET - BOX_H))
         fi
         local box_x=$((x + H_OFFSET))
-        if [ $((box_x + box_w)) -gt 1890 ]; then
+        if [ $((box_x + box_w)) -gt 1260 ]; then
             box_x=$((x - H_OFFSET - box_w))
         fi
-        [ "$box_x" -lt 0 ] && box_x=15
+        [ "$box_x" -lt 0 ] && box_x=10
 
+        # Collision avoidance: if this box overlaps (within BOX_GAP of)
+        # any box already placed for an earlier label on this video,
+        # push it downward in BOX_H+BOX_GAP steps until it's clear, so
+        # two nearby coordinate labels never end up crowding each other
+        # like "Glowing gas knot" / "Dust cloud region" did before.
         tries=0
         while :; do
             collision=false
@@ -343,8 +442,11 @@ build_labels_chain() {
             done
             [ "$collision" = false ] && break
             box_y=$((box_y + BOX_H + BOX_GAP))
-            if [ $((box_y + BOX_H)) -gt 1050 ]; then
-                box_y=30
+            # Ran off the bottom of the frame — wrap back to the top and
+            # keep nudging; after a handful of tries just accept overlap
+            # rather than loop forever (extremely dense label sets only).
+            if [ $((box_y + BOX_H)) -gt 700 ]; then
+                box_y=20
             fi
             tries=$((tries + 1))
             [ "$tries" -gt 12 ] && break
@@ -360,7 +462,7 @@ build_labels_chain() {
             seg_y_top=$box_y; seg_y_bot=$y
         fi
         local seg_h=$((seg_y_bot - seg_y_top))
-        [ "$seg_h" -lt 3 ] && seg_h=3
+        [ "$seg_h" -lt 2 ] && seg_h=2
 
         local h_left h_w
         if [ "$box_x" -gt "$x" ]; then
@@ -368,18 +470,20 @@ build_labels_chain() {
         else
             h_left=$box_x; h_w=$((x - box_x))
         fi
-        [ "$h_w" -lt 3 ] && h_w=3
+        [ "$h_w" -lt 2 ] && h_w=2
 
         local n1="lbl${idx}_dot" n2="lbl${idx}_v" n3="lbl${idx}_h" n4="lbl${idx}_bg" n5="lbl${idx}_bar" n6="lbl${idx}_outline" n7="lbl${idx}_txt"
 
-        LABELS_CHAIN+="[${prev}]drawbox=x=${x}:y=${seg_y_top}:w=3:h=${seg_h}:color=${GOLD}@0.85:t=fill[${n2}];"
-        LABELS_CHAIN+="[${n2}]drawbox=x=${h_left}:y=${box_y}:w=${h_w}:h=3:color=${GOLD}@0.85:t=fill[${n3}];"
+        # Gold-tinted connector line (right-angle: vertical then horizontal)
+        LABELS_CHAIN+="[${prev}]drawbox=x=${x}:y=${seg_y_top}:w=2:h=${seg_h}:color=${GOLD}@0.85:t=fill[${n2}];"
+        LABELS_CHAIN+="[${n2}]drawbox=x=${h_left}:y=${box_y}:w=${h_w}:h=2:color=${GOLD}@0.85:t=fill[${n3}];"
+        # Label box: dark fill + gold accent bar (left edge) + thin gold outline
         LABELS_CHAIN+="[${n3}]drawbox=x=${box_x}:y=${box_y}:w=${box_w}:h=${BOX_H}:color=black@0.78:t=fill[${n4}];"
         LABELS_CHAIN+="[${n4}]drawbox=x=${box_x}:y=${box_y}:w=${ACCENT_W}:h=${BOX_H}:color=${GOLD}:t=fill[${n5}];"
-        LABELS_CHAIN+="[${n5}]drawbox=x=${box_x}:y=${box_y}:w=${box_w}:h=${BOX_H}:color=${GOLD}@0.5:t=2[${n6}];"
+        LABELS_CHAIN+="[${n5}]drawbox=x=${box_x}:y=${box_y}:w=${box_w}:h=${BOX_H}:color=${GOLD}@0.5:t=1[${n6}];"
         LABELS_CHAIN+="[${n6}]drawtext=fontfile=${FONT}:textfile=${ASSET_DIR}/label${idx}.txt:fontcolor=white:fontsize=${LABEL_FONTSIZE}:x=$((box_x + ACCENT_W + LABEL_PAD_L)):y=$((box_y + (BOX_H - LABEL_FONTSIZE) / 2)):${SHADOW}[${n7}];"
-        # 30x30 marker, centered on the point
-        LABELS_CHAIN+="[${n7}][dm${idx}]overlay=x=$((x - 15)):y=$((y - 15))[${n1}];"
+        # Circular gold-ring/white marker dot, overlaid on top of everything
+        LABELS_CHAIN+="[${n7}][dm${idx}]overlay=x=$((x - 8)):y=$((y - 8))[${n1}];"
 
         prev="$n1"
     done
@@ -389,13 +493,25 @@ build_labels_chain() {
 }
 
 #############################################
-# prepare_video_content: loads headlines +
-# facts for the video about to stream and
-# builds the filter chain (information text
-# only — no side panel, no bottom bar).
+# prepare_video_content: (re)loads headlines +
+# facts for the video about to stream, and
+# rebuilds BASE_CHAIN / FACT_END to match.
 #
-# Per-video override files:
-#   <basename>.headlines.txt / <basename>.facts.txt
+# Per-video override: if files named
+#   <basename>.headlines.txt
+#   <basename>.facts.txt
+# exist (basename = video filename without
+# extension — same derivation used for the
+# up-next bumper title), they're used verbatim,
+# in the order given. Useful for curating panel
+# content to match a specific video.
+#
+# Otherwise falls back to the shared pool
+# (galaxy_info.txt / facts.txt / built-in
+# defaults), shuffled into a fresh random order
+# each video so the panel doesn't feel like a
+# static banner repeating identically on every
+# clip.
 #############################################
 prepare_video_content() {
     local url="$1"
@@ -403,7 +519,13 @@ prepare_video_content() {
     base="${url##*/}"
     base="${base%.*}"
 
-    # `local` matters: the main loop uses a bare `i` too.
+    # FIX: same reasoning as build_labels_chain() above — this function
+    # is also called once per video from inside the outer stream loop
+    # (`for ((i = 0; i < NUM_URLS; i++))` at the bottom of this file),
+    # and it reuses bare `i`/`idx` in several for-loops below. Without
+    # `local`, those loops overwrite the outer loop's global `i`, which
+    # made the stream get stuck re-playing the first video forever
+    # instead of advancing through the playlist.
     local i idx
 
     RAW_LINES=()
@@ -463,9 +585,18 @@ prepare_video_content() {
     done
     echo "Longest headline wraps to $MAX_HEADLINE_LINES line(s)."
 
-    HEADLINE_Y=300
-    FACT_LABEL_Y=$((HEADLINE_Y + MAX_HEADLINE_LINES * HEADLINE_LINE_H + 45))
-    FACT_TEXT_Y=$((FACT_LABEL_Y + 33))
+    HEADLINE_Y=230
+    PROGRESS_Y=$((HEADLINE_Y + MAX_HEADLINE_LINES * HEADLINE_LINE_H + 40))
+    DOTS_Y=$((PROGRESS_Y + 20))
+    FACT_DIVIDER_Y=$((DOTS_Y + 40))
+    FACT_LABEL_Y=$((FACT_DIVIDER_Y + 14))
+    FACT_TEXT_Y=$((FACT_LABEL_Y + 20))
+
+    TICKER_STRING=""
+    for i in "${!RAW_LINES[@]}"; do
+        TICKER_STRING+="${RAW_LINES[$i]}     •     "
+    done
+    printf '%s' "$TICKER_STRING" > "$ASSET_DIR/ticker.txt"
 
     FACT_N=${#FACTS[@]}
     FACT_CYCLE=$((FACT_N * FACT_SLOT))
@@ -475,37 +606,41 @@ prepare_video_content() {
     done
 
     #########################################
-    # Filter chain: video + overlay + info text
+    # Rebuild BASE_CHAIN for this video's content
     #########################################
-    CHAIN="[0:v]scale=${OUT_W}:${OUT_H}:force_original_aspect_ratio=decrease,pad=${OUT_W}:${OUT_H}:(ow-iw)/2:(oh-ih)/2:black[video];"
-    CHAIN+="[1:v]scale=${OUT_W}:${OUT_H}:flags=fast_bilinear[ovl];"
+    CHAIN="[0:v]scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2:black[video];"
+    CHAIN+="[1:v]scale=1280:720:flags=fast_bilinear[ovl];"
     CHAIN+="[ovl][video]overlay=0:0[base];"
 
+    # Optional coordinate-based callout labels for this video, drawn onto
+    # the raw video before the panel/UI so the panel stays on top.
     build_labels_chain "$url"
     CHAIN+="$LABELS_CHAIN"
 
-    # Layout note: the Saturn video already has its own "SATURN / THE RINGED
-    # PLANET" title (top-left, down to y~110), a LIVE badge (top-right, down to
-    # y~65) and a credit line (bottom-left, y~1045). So there is no LIVE badge
-    # here, the info block starts below y=120, the credits/clock/stats sit
-    # top-right under the video's LIVE badge, and the watermark is bottom-right.
+    CHAIN+="${LABELS_OUT}drawbox=x=0:y=0:w=333:h=720:color=black@0.60:t=fill[p1];"
+    CHAIN+="[p1]drawbox=x=333:y=0:w=4:h=720:color=black@0.45:t=fill[p2];"
+    CHAIN+="[p2]drawbox=x=337:y=0:w=4:h=720:color=black@0.30:t=fill[p3];"
+    CHAIN+="[p3]drawbox=x=341:y=0:w=4:h=720:color=black@0.15:t=fill[p4];"
+    CHAIN+="[p4]drawbox=x=0:y=0:w=347:h=4:color=${GOLD}@0.9:t=fill[p5];"
+    CHAIN+="[p5]drawbox=x=345:y=0:w=2:h=720:color=${GOLD}@0.6:t=fill[p6];"
 
-    # Credits / clock / stats (right-aligned, top-right, below the video's own LIVE badge)
-    CHAIN+="${LABELS_OUT}drawtext=fontfile=${FONT}:text='Credit\: Video designed by Technical Talk India':fontcolor=white@0.9:fontsize=22:x=1870-text_w:y=90:${SHADOW}[p9];"
-    CHAIN+="[p9]drawtext=fontfile=${FONT}:textfile=${ASSET_DIR}/clock.txt:reload=1:fontcolor=${GOLD}:fontsize=21:x=1870-text_w:y=120:${SHADOW}[p10];"
-    CHAIN+="[p10]drawtext=fontfile=${FONT}:textfile=${ASSET_DIR}/subs.txt:reload=1:fontcolor=white@0.85:fontsize=19:x=1870-text_w:y=148:${SHADOW}[p10b];"
-    CHAIN+="[p10b]drawtext=fontfile=${FONT}:textfile=${ASSET_DIR}/viewers.txt:reload=1:fontcolor=white@0.85:fontsize=19:x=1870-text_w:y=174:${SHADOW}[p10c];"
+    CHAIN+="[p6]drawbox=x=27:y=28:w=11:h=11:color=${RED}:t=fill:enable='lt(mod(t\,1)\,0.6)'[p7];"
+    CHAIN+="[p7]drawtext=fontfile=${FONT}:text='LIVE':fontcolor=white:fontsize=30:x=44:y=19[p8];"
 
-    # Title (below the video's own title)
-    CHAIN+="[p10c]drawtext=fontfile=${FONT}:textfile=${ASSET_DIR}/title1.txt:fontcolor=white:fontsize=39:x=50:y=150:${SHADOW}[p11];"
-    CHAIN+="[p11]drawbox=x=50:y=210:w=620:h=3:color=${GOLD}@0.8:t=fill[p13];"
+    CHAIN+="[p8]drawtext=fontfile=${FONT}:text='Credits\: NASA':fontcolor=white@0.85:fontsize=15:x=313-text_w:y=19[p9];"
+    CHAIN+="[p9]drawtext=fontfile=${FONT}:textfile=${ASSET_DIR}/clock.txt:reload=1:fontcolor=${GOLD}:fontsize=14:x=313-text_w:y=39[p10];"
+    CHAIN+="[p10]drawtext=fontfile=${FONT}:textfile=${ASSET_DIR}/subs.txt:reload=1:fontcolor=white@0.75:fontsize=13:x=313-text_w:y=57[p10b];"
+    CHAIN+="[p10b]drawtext=fontfile=${FONT}:textfile=${ASSET_DIR}/viewers.txt:reload=1:fontcolor=white@0.75:fontsize=13:x=313-text_w:y=75[p10c];"
 
-    # Header + eyebrow
-    CHAIN+="[p13]drawbox=x=50:y=234:w=12:h=12:color=${GOLD}:t=fill[p14];"
-    CHAIN+="[p14]drawtext=fontfile=${FONT}:textfile=${ASSET_DIR}/header.txt:fontcolor=${GOLD}:fontsize=22:x=74:y=230:${SHADOW}[p15];"
-    CHAIN+="[p15]drawtext=fontfile=${FONT}:textfile=${ASSET_DIR}/eyebrow.txt:fontcolor=${GOLD}@0.9:fontsize=18:x=50:y=270:${SHADOW}[p16];"
+    CHAIN+="[p10c]drawtext=fontfile=${FONT}:textfile=${ASSET_DIR}/title1.txt:fontcolor=white:fontsize=23:x=33:y=95:${SHADOW}[p11];"
+    CHAIN+="[p11]drawtext=fontfile=${FONT}:textfile=${ASSET_DIR}/title2.txt:fontcolor=white@0.85:fontsize=17:x=33:y=124:${SHADOW}[p12];"
+    CHAIN+="[p12]drawbox=x=33:y=155:w=280:h=2:color=white@0.3:t=fill[p13];"
 
-    # Rotating headlines
+    CHAIN+="[p13]drawbox=x=33:y=171:w=8:h=8:color=${GOLD}:t=fill[p14];"
+    CHAIN+="[p14]drawtext=fontfile=${FONT}:textfile=${ASSET_DIR}/header.txt:fontcolor=${GOLD}:fontsize=15:x=49:y=168[p15];"
+
+    CHAIN+="[p15]drawtext=fontfile=${FONT}:textfile=${ASSET_DIR}/eyebrow.txt:fontcolor=${GOLD}@0.85:fontsize=12:x=33:y=210[p16];"
+
     local prev="p16"
     for i in "${!RAW_LINES[@]}"; do
         idx=$((i + 1))
@@ -513,12 +648,42 @@ prepare_video_content() {
         local end=$((start + SLOT))
         local nxt="h${idx}"
         local ALPHA="if(between(mod(t\,${CYCLE})\,${start}\,${end})\,if(lt(mod(t\,${CYCLE})-${start}\,0.6)\,(mod(t\,${CYCLE})-${start})/0.6\,if(gt(mod(t\,${CYCLE})-${start}\,${SLOT}-0.6)\,(${end}-mod(t\,${CYCLE}))/0.6\,1))\,0)"
-        CHAIN+="[${prev}]drawtext=fontfile=${FONT}:textfile=${ASSET_DIR}/headline${idx}.txt:fontcolor=white:fontsize=${HEADLINE_FONTSIZE}:line_spacing=${HEADLINE_LINE_SPACING}:x=50:y=${HEADLINE_Y}:alpha='${ALPHA}':${SHADOW}[${nxt}];"
+        CHAIN+="[${prev}]drawtext=fontfile=${FONT}:textfile=${ASSET_DIR}/headline${idx}.txt:fontcolor=white:fontsize=${HEADLINE_FONTSIZE}:line_spacing=${HEADLINE_LINE_SPACING}:x=33:y=${HEADLINE_Y}:alpha='${ALPHA}':${SHADOW}[${nxt}];"
         prev="$nxt"
     done
 
-    # Rotating "Did you know" facts
-    CHAIN+="[${prev}]drawtext=fontfile=${FONT}:textfile=${ASSET_DIR}/fact_label.txt:fontcolor=${GOLD}@0.9:fontsize=18:x=50:y=${FACT_LABEL_Y}:${SHADOW}[fp2];"
+    CHAIN+="[${prev}]drawtext=fontfile=${FONT}:text='STORY PROGRESS':fontcolor=white@0.35:fontsize=9:x=33:y=$((PROGRESS_Y - 15))[pgcap];"
+    CHAIN+="[pgcap]drawbox=x=33:y=${PROGRESS_Y}:w=280:h=2:color=white@0.15:t=fill[pg1];"
+    CHAIN+="[pg1]drawbox=x=33:y=${PROGRESS_Y}:w='280*(mod(t\,${SLOT}))/${SLOT}':h=2:color=${GOLD}:t=fill[pg2];"
+    prev="pg2"
+
+    for i in "${!RAW_LINES[@]}"; do
+        idx=$((i + 1))
+        local x=$((33 + i * 17))
+        local nxt="db${idx}"
+        CHAIN+="[${prev}]drawbox=x=${x}:y=${DOTS_Y}:w=7:h=7:color=white@0.3:t=fill[${nxt}];"
+        prev="$nxt"
+    done
+
+    local last=$((N - 1))
+    for i in "${!RAW_LINES[@]}"; do
+        idx=$((i + 1))
+        local x=$((33 + i * 17))
+        local start=$((i * SLOT))
+        local end=$((start + SLOT))
+        local ENABLE="between(mod(t\,${CYCLE})\,${start}\,${end})"
+        if [ "$i" -eq "$last" ]; then
+            CHAIN+="[${prev}]drawbox=x=${x}:y=${DOTS_Y}:w=7:h=7:color=${GOLD}:t=fill:enable='${ENABLE}'[pdotend];"
+            prev="pdotend"
+        else
+            local nxt="da${idx}"
+            CHAIN+="[${prev}]drawbox=x=${x}:y=${DOTS_Y}:w=7:h=7:color=${GOLD}:t=fill:enable='${ENABLE}'[${nxt}];"
+            prev="$nxt"
+        fi
+    done
+
+    CHAIN+="[${prev}]drawbox=x=33:y=${FACT_DIVIDER_Y}:w=280:h=2:color=${GOLD}@0.4:t=fill[fp1];"
+    CHAIN+="[fp1]drawtext=fontfile=${FONT}:textfile=${ASSET_DIR}/fact_label.txt:fontcolor=${GOLD}@0.85:fontsize=12:x=33:y=${FACT_LABEL_Y}[fp2];"
     prev="fp2"
     for i in "${!FACTS[@]}"; do
         idx=$((i + 1))
@@ -526,7 +691,7 @@ prepare_video_content() {
         local end=$((start + FACT_SLOT))
         local nxt="f${idx}"
         local FALPHA="if(between(mod(t\,${FACT_CYCLE})\,${start}\,${end})\,if(lt(mod(t\,${FACT_CYCLE})-${start}\,0.6)\,(mod(t\,${FACT_CYCLE})-${start})/0.6\,if(gt(mod(t\,${FACT_CYCLE})-${start}\,${FACT_SLOT}-0.6)\,(${end}-mod(t\,${FACT_CYCLE}))/0.6\,1))\,0)"
-        CHAIN+="[${prev}]drawtext=fontfile=${FONT}:textfile=${ASSET_DIR}/fact${idx}.txt:fontcolor=white@0.95:fontsize=24:line_spacing=10:x=50:y=${FACT_TEXT_Y}:alpha='${FALPHA}':${SHADOW}[${nxt}];"
+        CHAIN+="[${prev}]drawtext=fontfile=${FONT}:textfile=${ASSET_DIR}/fact${idx}.txt:fontcolor=white@0.9:fontsize=16:line_spacing=7:x=33:y=${FACT_TEXT_Y}:alpha='${FALPHA}'[${nxt}];"
         prev="$nxt"
     done
 
@@ -535,26 +700,60 @@ prepare_video_content() {
 }
 
 #############################################
-# build_final_filter: channel watermark and
-# pulsing subscribe ring only (no CTA box,
-# no bottom ticker, no frame).
+# build_final_filter: appends the CTA / next-
+# video countdown / ticker / watermark / border
+# section onto BASE_CHAIN. Called fresh for each
+# video since the countdown depends on that
+# video's probed duration.
 #############################################
 build_final_filter() {
+    local total_duration="$1"
     local tail="$BASE_CHAIN"
 
-    tail+="[${FACT_END}]drawtext=fontfile=${FONT}:text='${CHANNEL_NAME}':fontcolor=white@0.55:fontsize=22:borderw=2:bordercolor=black@0.7:x=1810-text_w:y=1030[wm1];"
+    local CTA_CYCLE=240
+    local CTA_SHOW=8
+    local CTA_ALPHA="if(between(mod(t\,${CTA_CYCLE})\,0\,${CTA_SHOW})\,if(lt(mod(t\,${CTA_CYCLE})\,0.6)\,mod(t\,${CTA_CYCLE})/0.6\,if(gt(mod(t\,${CTA_CYCLE})\,${CTA_SHOW}-0.6)\,(${CTA_SHOW}-mod(t\,${CTA_CYCLE}))/0.6\,1))\,0)"
+    local CTA_ENABLE="between(mod(t\,${CTA_CYCLE})\,0\,${CTA_SHOW})"
+    local COUNTDOWN_ENABLE="not(${CTA_ENABLE})"
 
+    tail+="[${FACT_END}]drawbox=x=733:y=620:w=507:h=43:color=black@0.75:t=fill[cta_bg];"
+    tail+="[cta_bg]drawbox=x=733:y=620:w=4:h=43:color=${GOLD}:t=fill[cta_bar];"
+    tail+="[cta_bar]drawbox=x=755:y=636:w=11:h=11:color=${RED}:t=fill:enable='${CTA_ENABLE}'[cta_dot];"
+    tail+="[cta_dot]drawtext=fontfile=${FONT}:textfile=${ASSET_DIR}/cta.txt:fontcolor=white:fontsize=19:x=773:y=633:alpha='${CTA_ALPHA}'[cta_sub];"
+
+    if [[ "$total_duration" =~ ^[0-9]+$ ]] && [ "$total_duration" -gt 0 ]; then
+        tail+="[cta_sub]drawtext=fontfile=${FONT}:text='Next video in %{eif\:max(${total_duration}-t\,0)\:d}s':fontcolor=white:fontsize=19:x=773:y=633:enable='${COUNTDOWN_ENABLE}'[cta_final];"
+    else
+        tail+="[cta_sub]drawtext=fontfile=${FONT}:text='Coming up next...':fontcolor=white@0.85:fontsize=19:x=773:y=633:enable='${COUNTDOWN_ENABLE}'[cta_final];"
+    fi
+
+    tail+="[cta_final]drawbox=x=0:y=680:w=1280:h=40:color=black@0.72:t=fill[tk1];"
+    tail+="[tk1]drawbox=x=0:y=680:w=1280:h=2:color=${GOLD}@0.9:t=fill[tk2];"
+    tail+="[tk2]drawtext=fontfile=${FONT}:textfile=${ASSET_DIR}/ticker.txt:fontcolor=white:fontsize=17:borderw=2:bordercolor=black@0.6:y=695:x='w-mod(t*${TICKER_SPEED}\,text_w+w)'[tk3];"
+    tail+="[tk3]drawbox=x=0:y=680:w=120:h=40:color=black@0.85:t=fill[tk4];"
+    tail+="[tk4]drawbox=x=0:y=682:w=113:h=38:color=${GOLD}:t=fill[tk5];"
+    tail+="[tk5]drawtext=fontfile=${FONT}:text='BULLETIN':fontcolor=black:fontsize=16:x=17:y=695[tk6];"
+
+    tail+="[tk6]drawtext=fontfile=${FONT}:text='${CHANNEL_NAME}':fontcolor=white@0.45:fontsize=15:borderw=1.5:bordercolor=black@0.7:x=353:y=655[wm1];"
+
+    # Pulsing ring around the subscribe icon (baked into overlay.png at
+    # SUB_ICON_X/SUB_ICON_Y) — visible for 1s out of every 3s, so it
+    # catches the eye without being a constant distraction.
     local SUB_PULSE_ENABLE="lt(mod(t\,3)\,1)"
     local sub_ring_x=$((SUB_ICON_X - SUB_ICON_R))
     local sub_ring_y=$((SUB_ICON_Y - SUB_ICON_R))
     local sub_ring_d=$((SUB_ICON_R * 2))
-    tail+="[wm1]drawbox=x=${sub_ring_x}:y=${sub_ring_y}:w=${sub_ring_d}:h=${sub_ring_d}:color=${GOLD}@0.9:t=4:enable='${SUB_PULSE_ENABLE}'[final]"
+    tail+="[wm1]drawbox=x=${sub_ring_x}:y=${sub_ring_y}:w=${sub_ring_d}:h=${sub_ring_d}:color=${GOLD}@0.9:t=3:enable='${SUB_PULSE_ENABLE}'[wm2];"
+
+    tail+="[wm2]drawbox=x=0:y=0:w=1280:h=720:color=black@0.5:t=2[final]"
 
     echo "$tail"
 }
 
 #############################################
-# Up-next bumper
+# Up-next bumper: short branded title card
+# streamed between videos to reduce drop-off
+# at the loop/transition point.
 #############################################
 run_bumper() {
     local next_url="$1"
@@ -583,15 +782,15 @@ run_bumper() {
     fade_out_start=$(awk -v d="$BUMPER_DURATION" 'BEGIN{print d - 0.6}')
 
     local BFILTER
-    BFILTER="[0:v]scale=${OUT_W}:${OUT_H}:force_original_aspect_ratio=increase,crop=${OUT_W}:${OUT_H}[bg];"
-    BFILTER+="[bg]drawbox=x=0:y=0:w=${OUT_W}:h=${OUT_H}:color=black@0.55:t=fill[b1];"
-    BFILTER+="[b1]drawbox=x=40:y=42:w=17:h=17:color=${RED}:t=fill:enable='lt(mod(t\,1)\,0.6)'[b2];"
-    BFILTER+="[b2]drawtext=fontfile=${FONT}:text='LIVE':fontcolor=white:fontsize=45:x=66:y=28[b3];"
-    BFILTER+="[b3]drawbox=x=0:y=470:w=${OUT_W}:h=3:color=${GOLD}@0.8:t=fill[b4];"
-    BFILTER+="[b4]drawtext=fontfile=${FONT}:text='UP NEXT':fontcolor=${GOLD}:fontsize=33:x=(w-text_w)/2:y=390[b5];"
-    BFILTER+="[b5]drawtext=fontfile=${FONT}:textfile=${ASSET_DIR}/bumper_title.txt:fontcolor=white:fontsize=54:line_spacing=12:x=(w-text_w)/2:y=520:${SHADOW}[b6];"
-    BFILTER+="[b6]drawtext=fontfile=${FONT}:textfile=${ASSET_DIR}/bumper_sub.txt:fontcolor=white@0.75:fontsize=27:x=(w-text_w)/2:y=640[b7];"
-    BFILTER+="[b7]drawtext=fontfile=${FONT}:text='${CHANNEL_NAME}':fontcolor=white@0.4:fontsize=21:x=(w-text_w)/2:y=705[b8];"
+    BFILTER="[0:v]scale=1280:720:force_original_aspect_ratio=increase,crop=1280:720[bg];"
+    BFILTER+="[bg]drawbox=x=0:y=0:w=1280:h=720:color=black@0.55:t=fill[b1];"
+    BFILTER+="[b1]drawbox=x=27:y=28:w=11:h=11:color=${RED}:t=fill:enable='lt(mod(t\,1)\,0.6)'[b2];"
+    BFILTER+="[b2]drawtext=fontfile=${FONT}:text='LIVE':fontcolor=white:fontsize=30:x=44:y=19[b3];"
+    BFILTER+="[b3]drawbox=x=0:y=313:w=1280:h=2:color=${GOLD}@0.8:t=fill[b4];"
+    BFILTER+="[b4]drawtext=fontfile=${FONT}:text='UP NEXT':fontcolor=${GOLD}:fontsize=22:x=(w-text_w)/2:y=260[b5];"
+    BFILTER+="[b5]drawtext=fontfile=${FONT}:textfile=${ASSET_DIR}/bumper_title.txt:fontcolor=white:fontsize=36:line_spacing=8:x=(w-text_w)/2:y=347:${SHADOW}[b6];"
+    BFILTER+="[b6]drawtext=fontfile=${FONT}:textfile=${ASSET_DIR}/bumper_sub.txt:fontcolor=white@0.75:fontsize=18:x=(w-text_w)/2:y=427[b7];"
+    BFILTER+="[b7]drawtext=fontfile=${FONT}:text='${CHANNEL_NAME}':fontcolor=white@0.4:fontsize=14:x=(w-text_w)/2:y=470[b8];"
     BFILTER+="[b8]fade=t=in:st=0:d=0.5,fade=t=out:st=${fade_out_start}:d=0.6[final]"
 
     ffmpeg \
@@ -602,20 +801,20 @@ run_bumper() {
     -filter_complex "$BFILTER" \
     -map "[final]" \
     -map 1:a \
-    -r "$OUT_FPS" \
-    -s "${OUT_W}x${OUT_H}" \
+    -r 24 \
+    -s 1280x720 \
     -c:v libx264 \
-    -preset "$X264_PRESET" \
+    -preset ultrafast \
     -tune zerolatency \
     -threads 2 \
     -profile:v high \
     -level 4.1 \
     -pix_fmt yuv420p \
-    -b:v "$VIDEO_BITRATE" \
-    -maxrate "$VIDEO_BITRATE" \
-    -bufsize "$VIDEO_BUFSIZE" \
-    -g $((OUT_FPS * 2)) \
-    -keyint_min $((OUT_FPS * 2)) \
+    -b:v 3000k \
+    -maxrate 3000k \
+    -bufsize 6000k \
+    -g 60 \
+    -keyint_min 60 \
     -sc_threshold 0 \
     -c:a aac \
     -b:a 128k \
@@ -626,20 +825,37 @@ run_bumper() {
 }
 
 #############################################
-# Stream one video with automatic retry
+# Stream one video with automatic retry on
+# failure/crash (e.g. Bus error, network drop),
+# instead of letting set -e kill the script.
 #############################################
 run_video() {
     local url="$1"
     local attempt=1
 
+    # Load headlines/facts tied to this specific video (curated file if
+    # present, otherwise a freshly shuffled pool) and rebuild the panel
+    # filter chain to match.
     prepare_video_content "$url"
 
+    # Probe actual duration so the CTA box can show a real countdown to
+    # the next video. Falls back gracefully if probing fails.
+    local duration
+    duration=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$url" 2>/dev/null || echo "")
+    duration=${duration%.*}
+    [[ "$duration" =~ ^[0-9]+$ ]] || duration=""
+    if [ -n "$duration" ]; then
+        echo "Probed duration: ${duration}s"
+    else
+        echo "Could not probe duration — countdown will show generic filler text."
+    fi
+
     local filter
-    filter=$(build_final_filter)
+    filter=$(build_final_filter "$duration")
 
     while [ "$attempt" -le "$MAX_RETRIES" ]; do
         echo "----------------------------------------"
-        echo "Streaming (attempt ${attempt}/${MAX_RETRIES}) @ ${OUT_W}x${OUT_H} ${OUT_FPS}fps:"
+        echo "Streaming (attempt ${attempt}/${MAX_RETRIES}):"
         echo "$url"
         echo "----------------------------------------"
 
@@ -657,20 +873,20 @@ run_video() {
         -filter_complex "$filter" \
         -map "[final]" \
         -map 0:a? \
-        -r "$OUT_FPS" \
-        -s "${OUT_W}x${OUT_H}" \
+        -r 30 \
+        -s 1280x720 \
         -c:v libx264 \
-        -preset "$X264_PRESET" \
+        -preset ultrafast \
         -tune zerolatency \
         -threads 2 \
         -profile:v high \
         -level 4.1 \
         -pix_fmt yuv420p \
-        -b:v "$VIDEO_BITRATE" \
-        -maxrate "$VIDEO_BITRATE" \
-        -bufsize "$VIDEO_BUFSIZE" \
-        -g $((OUT_FPS * 2)) \
-        -keyint_min $((OUT_FPS * 2)) \
+        -b:v 3000k \
+        -maxrate 3000k \
+        -bufsize 6000k \
+        -g 60 \
+        -keyint_min 60 \
         -sc_threshold 0 \
         -c:a aac \
         -b:a 128k \
@@ -715,6 +931,9 @@ if [ "$NUM_URLS" -eq 0 ]; then
     exit 1
 fi
 
+# Shuffle playback order fresh for every workflow run, so the sequence
+# of videos isn't identical every time the 5-hour cron restarts the
+# container. (Fisher-Yates via `shuf`, always available on Ubuntu.)
 if [ "$NUM_URLS" -gt 1 ]; then
     mapfile -t URLS < <(printf '%s\n' "${URLS[@]}" | shuf)
     echo "Shuffled playback order for this run:"
